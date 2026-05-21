@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Budget Scanner — Analyse bancaire instantanée</title>
+  <meta name="description" content="Collez votre relevé bancaire, obtenez un tableau de bord clair et des recommandations. 100% privé, aucune donnée envoyée." />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="site-header">
+    <div class="container header-inner">
+      <div class="brand">
+        <span class="brand-mark">◐</span>
+        <span class="brand-name">Budget Scanner</span>
+      </div>
+      <nav class="nav">
+        <a href="#how">Comment ça marche</a>
+        <a href="#privacy">Confidentialité</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <!-- HERO -->
+    <section class="hero">
+      <div class="container">
+        <h1>Comprenez votre budget en 10 secondes.</h1>
+        <p class="lede">
+          Collez votre relevé bancaire ci-dessous. Obtenez un tableau de bord clair,
+          un cash-flow détaillé et des recommandations concrètes.
+        </p>
+        <p class="privacy-badge">
+          <span class="dot"></span>
+          100% local — aucune donnée n'est envoyée à un serveur.
+        </p>
+      </div>
+    </section>
+
+    <!-- INPUT -->
+    <section class="input-section">
+      <div class="container">
+        <div class="card">
+          <div class="card-header">
+            <h2>1. Vos données</h2>
+            <div class="card-actions">
+              <button id="load-sample" class="btn btn-ghost" type="button">Charger un exemple</button>
+              <label class="btn btn-ghost" for="file-input">Importer un fichier</label>
+              <input id="file-input" type="file" accept=".csv,.txt,.tsv,.ofx,.qif,.pdf" hidden />
+            </div>
+          </div>
+
+          <div id="drop-zone" class="drop-zone">
+            <textarea
+              id="data-input"
+              placeholder="Collez ici vos transactions, glissez-déposez un fichier (CSV, PDF, OFX, QIF) ou utilisez le bouton ci-dessus.&#10;&#10;Exemple :&#10;01/03/2025  SALAIRE ENTREPRISE     +2450,00&#10;02/03/2025  LOYER APPARTEMENT      -850,00&#10;03/03/2025  CARREFOUR              -76,40"
+              rows="12"
+            ></textarea>
+            <div class="drop-overlay">
+              <span>Déposez votre fichier ici</span>
+            </div>
+          </div>
+
+          <div class="card-footer">
+            <p class="help-text" id="parse-feedback">En attente de données…</p>
+            <button id="analyze-btn" class="btn btn-primary" type="button" disabled>Analyser</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- DASHBOARD -->
+    <section id="dashboard" class="dashboard hidden">
+      <div class="container">
+        <div class="dashboard-header">
+          <h2 class="section-title">2. Tableau de bord</h2>
+          <div class="card-actions">
+            <button id="export-csv" class="btn btn-ghost" type="button">Export CSV</button>
+            <button id="export-pdf" class="btn btn-ghost" type="button">Export PDF</button>
+          </div>
+        </div>
+
+        <!-- KPIs -->
+        <div class="kpi-grid">
+          <div class="kpi">
+            <span class="kpi-label">Revenus</span>
+            <span class="kpi-value pos" id="kpi-income">—</span>
+          </div>
+          <div class="kpi">
+            <span class="kpi-label">Dépenses</span>
+            <span class="kpi-value neg" id="kpi-expenses">—</span>
+          </div>
+          <div class="kpi">
+            <span class="kpi-label">Cash-flow</span>
+            <span class="kpi-value" id="kpi-cashflow">—</span>
+          </div>
+          <div class="kpi">
+            <span class="kpi-label">Taux d'épargne</span>
+            <span class="kpi-value" id="kpi-savings-rate">—</span>
+          </div>
+        </div>
+
+        <!-- Breakdown -->
+        <div class="grid-2">
+          <div class="card">
+            <h3>Répartition par catégorie</h3>
+            <div id="category-breakdown" class="breakdown"></div>
+          </div>
+
+          <div class="card">
+            <h3>Top 5 dépenses</h3>
+            <table class="table" id="top-expenses-table">
+              <thead>
+                <tr>
+                  <th>Libellé</th>
+                  <th class="num">Montant</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Transactions -->
+        <div class="card">
+          <div class="card-header">
+            <h3>Toutes les transactions</h3>
+            <div class="card-actions">
+              <select id="filter-category" class="select"></select>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table class="table" id="transactions-table">
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Libellé</th>
+                  <th>Catégorie</th>
+                  <th class="num">Montant</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- RECOMMENDATIONS -->
+    <section id="recommendations" class="recommendations hidden">
+      <div class="container">
+        <h2 class="section-title">3. Recommandations</h2>
+        <div class="grid-2">
+          <div class="card">
+            <h3>Économies potentielles</h3>
+            <ul id="reco-savings" class="reco-list"></ul>
+          </div>
+          <div class="card">
+            <h3>Optimisations & gains</h3>
+            <ul id="reco-gains" class="reco-list"></ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- HOW IT WORKS -->
+    <section id="how" class="how">
+      <div class="container">
+        <h2 class="section-title">Comment ça marche</h2>
+        <div class="steps">
+          <div class="step">
+            <span class="step-num">1</span>
+            <h4>Collez vos données</h4>
+            <p>Exportez votre relevé en CSV ou copiez les lignes depuis votre banque.</p>
+          </div>
+          <div class="step">
+            <span class="step-num">2</span>
+            <h4>Catégorisation auto</h4>
+            <p>Les transactions sont classées en revenus, charges fixes, courses, loisirs, etc.</p>
+          </div>
+          <div class="step">
+            <span class="step-num">3</span>
+            <h4>Tableau de bord</h4>
+            <p>KPI, répartition et recommandations apparaissent instantanément.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- PRIVACY -->
+    <section id="privacy" class="privacy">
+      <div class="container">
+        <h2 class="section-title">Confidentialité</h2>
+        <p>
+          Tout le traitement se fait dans votre navigateur. Aucune donnée bancaire
+          n'est transmise, stockée ou journalisée sur un serveur. Fermez l'onglet,
+          tout disparaît.
+        </p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>Budget Scanner — outil gratuit, sans compte, sans tracking.</p>
+    </div>
+  </footer>
+
+  <!-- External libs: loaded only on demand by app.js to keep initial load light.
+       Sources: cdnjs.cloudflare.com (verified providers, integrity hashes pinned below). -->
+  <script src="app.js"></script>
+</body>
+</html>
