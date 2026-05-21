@@ -200,6 +200,60 @@
   exportXlsxBtn.addEventListener('click', exportXLSX);
   exportPdfBtn.addEventListener('click', exportPDF);
 
+  // Global sign flip (fallback when bank export is inverted)
+  const flipSignsBtn = $('#flip-signs');
+  if (flipSignsBtn) flipSignsBtn.addEventListener('click', flipAllSigns);
+
+  function flipAllSigns() {
+    if (!lastAnalysis) return;
+    lastAnalysis.transactions.forEach(t => { t.amount = -t.amount; });
+    rerunAggregations();
+  }
+
+  function rerunAggregations() {
+    const transactions = lastAnalysis.transactions;
+    transactions.forEach(tx => { tx.category = categorise(tx); });
+
+    const totalIncome = transactions.filter(t => t.amount > 0).reduce((s, t) => s + t.amount, 0);
+    const totalExpenses = transactions.filter(t => t.amount < 0).reduce((s, t) => s + Math.abs(t.amount), 0);
+    const totalSavings = transactions
+      .filter(t => t.category.id === 'savings' && t.amount < 0)
+      .reduce((s, t) => s + Math.abs(t.amount), 0);
+    const cashflow = totalIncome - totalExpenses;
+    const savingsRate = totalIncome > 0 ? ((totalSavings + Math.max(cashflow, 0)) / totalIncome) * 100 : 0;
+    const categoryTotals = {};
+    for (const tx of transactions) {
+      if (tx.amount >= 0) continue;
+      const key = tx.category.id;
+      if (!categoryTotals[key]) {
+        categoryTotals[key] = { label: tx.category.label, total: 0, count: 0, type: tx.category.type, color: tx.category.color || null };
+      }
+      categoryTotals[key].total += Math.abs(tx.amount);
+      categoryTotals[key].count += 1;
+    }
+    const fixedCosts = Object.values(categoryTotals).filter(c => c.type === 'fixed').reduce((s, c) => s + c.total, 0);
+    const fees = Object.values(categoryTotals).filter(c => c.type === 'fees').reduce((s, c) => s + c.total, 0);
+    const subscriptions = detectSubscriptions(transactions);
+    const health = computeHealthScore({ savingsRate, totalIncome, fixedCosts, fees, totalSavings });
+
+    Object.assign(lastAnalysis, {
+      categoryTotals, income: totalIncome, expenses: totalExpenses,
+      cashflow, savings: totalSavings, savingsRate, fixedCosts, fees, subscriptions, health
+    });
+
+    renderAlerts(lastAnalysis);
+    renderHealthScore(health);
+    renderKPIs(totalIncome, totalExpenses, cashflow, savingsRate);
+    renderKPIDeltas(lastAnalysis);
+    renderPieChart(categoryTotals, totalExpenses);
+    renderBreakdown(categoryTotals, totalExpenses);
+    renderTopExpenses(transactions);
+    renderTransactions(transactions);
+    renderSubscriptions(subscriptions);
+    renderGoal();
+    renderRecommendations(transactions, categoryTotals, totalIncome, totalExpenses, cashflow, totalSavings);
+  }
+
   // Drag & drop
   ['dragenter', 'dragover'].forEach(ev => {
     dropZone.addEventListener(ev, (e) => {
@@ -257,16 +311,25 @@
     const arrayBuffer = await file.arrayBuffer();
     const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
     const allLines = [];
+    // Track Débit/Crédit column X positions (carried across pages if headers repeat)
+    let debitX = null, creditX = null;
     for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
       const page = await pdf.getPage(pageNum);
       const content = await page.getTextContent();
-      const lines = groupItemsIntoLines(content.items);
+      // Detect header positions on this page (banks repeat headers per page)
+      for (const item of content.items) {
+        const t = (item.str || '').toLowerCase().trim();
+        if (!t) continue;
+        if (/^d[ée]bit(\s*euros)?$/.test(t) || /d[ée]bit\s+euros/.test(t)) debitX = item.transform[4];
+        if (/^cr[ée]dit(\s*euros)?$/.test(t) || /cr[ée]dit\s+euros/.test(t)) creditX = item.transform[4];
+      }
+      const lines = groupItemsIntoLines(content.items, debitX, creditX);
       allLines.push(...lines);
     }
     return allLines.join('\n');
   }
 
-  function groupItemsIntoLines(items) {
+  function groupItemsIntoLines(items, debitX, creditX) {
     const rows = {};
     for (const item of items) {
       if (!item.str || !item.str.trim()) continue;
@@ -275,16 +338,26 @@
       if (!rows[bucket]) rows[bucket] = [];
       rows[bucket].push({ x: item.transform[4], str: item.str });
     }
+    const haveColumns = debitX !== null && creditX !== null && creditX > debitX;
+    const midX = haveColumns ? (debitX + creditX) / 2 : null;
     const sortedY = Object.keys(rows).map(Number).sort((a, b) => b - a);
+    // French amount pattern: "30,00", "1.234,56", "1 234,56"
+    const AMOUNT_RE = /^\d{1,3}(?:[.\s]\d{3})*,\d{2}$/;
     return sortedY.map(y => {
       const sorted = rows[y].sort((a, b) => a.x - b.x);
       let line = '';
       let lastX = -Infinity;
       for (const c of sorted) {
+        let s = c.str;
+        // If we know the column layout and this text looks like a French amount
+        // located in the right half of the page, prefix it with - (Débit) or + (Crédit).
+        if (haveColumns && AMOUNT_RE.test(s.trim()) && c.x > debitX - 30) {
+          s = (c.x < midX ? '-' : '+') + s.trim();
+        }
         if (lastX !== -Infinity && c.x - lastX > 20) line += '\t';
         else if (line) line += ' ';
-        line += c.str;
-        lastX = c.x + c.str.length * 5;
+        line += s;
+        lastX = c.x + s.length * 5;
       }
       return line.trim();
     }).filter(Boolean);
@@ -353,19 +426,51 @@
   }
 
   // ---------- PARSER ----------
+  // Skip noise lines (bank statement headers, footers, balances, IBANs…)
+  const NOISE_RE = /^(solde\b|nouveau solde|ancien solde|ref\s*:|r[ée]f\.?\s|page\s+\d|<<|titulaire|date\s+valeur|situation|total\b|sous-?total|iban\b|bic\b|relev[ée]|votre conseiller|cic\s|compte de|livret\b|start\s+jeunes|information|num[ée]ro|sous r[ée]serve|en euros|tenue de compte|votre banque|adresse|m\.?\s|mme\b|mlle\b|monsieur|madame|tel\s*:|tél\s*:|t[ée]l\.|courriel|email|www\.|http|@|en cas|prochain|frais\b|cotisation\b|conditions)/i;
+  function isNoiseLine(line) {
+    if (!line) return true;
+    if (line.length < 4) return true;
+    if (NOISE_RE.test(line)) return true;
+    return false;
+  }
+  // Continuation line heuristic: pure libellé text appended to previous tx
+  // (no date, no amount, looks like merchant detail e.g. "ZITOUNA CARTE 8626").
+  function isContinuationLine(line) {
+    if (!line) return false;
+    // Must NOT start with a date
+    if (/^\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4}/.test(line)) return false;
+    if (/^\d{4}-\d{2}-\d{2}/.test(line)) return false;
+    // Must NOT look like a tabular line (multiple cells separated by \t / ;)
+    if (line.includes('\t')) return false;
+    if (line.includes(';')) return false;
+    // No amount on the line
+    const tokens = line.split(/\s+/).filter(Boolean);
+    if (tokens.some(t => isAmount(t))) return false;
+    // Should look like a merchant/detail line: mostly uppercase or mixed text
+    return /[A-Za-zÀ-ÿ]/.test(line) && line.length <= 80;
+  }
   function parseTransactions(raw) {
     if (!raw || !raw.trim()) return [];
     const lines = raw.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
     const transactions = [];
     for (const line of lines) {
+      if (isNoiseLine(line)) continue;
       const tx = parseLine(line);
-      if (tx) transactions.push(tx);
+      if (tx) {
+        transactions.push(tx);
+      } else if (transactions.length && isContinuationLine(line)) {
+        // Append to previous transaction's libellé
+        const prev = transactions[transactions.length - 1];
+        prev.libelle = (prev.libelle + ' ' + line).replace(/\s+/g, ' ').trim();
+        prev.raw = prev.raw + ' | ' + line;
+      }
     }
     return transactions;
   }
 
   function parseLine(line) {
-    if (/^(date|libell|description|montant|amount|debit|credit)/i.test(line)) return null;
+    if (/^(date|libell|description|montant|amount|debit|credit|d[ée]bit|cr[ée]dit)/i.test(line)) return null;
     let parts;
     if (line.includes('\t')) parts = line.split('\t').map(p => p.trim());
     else if (line.includes(';')) parts = line.split(';').map(p => p.trim());
@@ -373,16 +478,59 @@
     else parts = freeformSplit(line);
     if (!parts || parts.length < 2) return null;
 
-    let date = null, amount = null, libelleParts = [];
+    // Extract date
+    let date = null;
+    const remaining = [];
     for (const p of parts) {
       if (!date && isDate(p)) { date = normaliseDate(p); continue; }
-      if (amount === null && isAmount(p)) { amount = parseAmount(p); continue; }
-      if (p) libelleParts.push(p);
+      remaining.push(p);
     }
+
+    // Find amount-like cells among the remaining parts
+    const amountIndexes = [];
+    remaining.forEach((p, i) => { if (isAmount(p)) amountIndexes.push(i); });
+
+    let amount = null;
+    let amountSlots = new Set();
+
+    if (amountIndexes.length >= 2) {
+      // Multi-amount line: very likely a "Débit | Crédit" two-column format.
+      // Heuristic: the first amount column is Débit (sortie → négatif),
+      // the second is Crédit (entrée → positif). Empty/zero column is ignored.
+      const vals = amountIndexes.map(i => ({ idx: i, val: parseAmount(remaining[i]) }));
+      const nonZero = vals.filter(v => v.val !== 0 && !isNaN(v.val));
+      if (nonZero.length === 1) {
+        // Single non-zero: column position determines the sign.
+        const position = vals.indexOf(nonZero[0]); // 0 = débit, 1+ = crédit
+        const absV = Math.abs(nonZero[0].val);
+        amount = position === 0 ? -absV : absV;
+        amountSlots = new Set(amountIndexes);
+      } else if (nonZero.length >= 2) {
+        // Both filled (rare but possible: a transfer line). Keep the difference,
+        // signed as crédit - débit so a net positive means an inflow.
+        const debit = Math.abs(nonZero[0].val);
+        const credit = Math.abs(nonZero[1].val);
+        amount = credit - debit;
+        amountSlots = new Set(amountIndexes);
+      } else {
+        // Only zeros: skip line
+        return null;
+      }
+    } else if (amountIndexes.length === 1) {
+      amount = parseAmount(remaining[amountIndexes[0]]);
+      amountSlots = new Set([amountIndexes[0]]);
+    } else {
+      return null;
+    }
+
     if (amount === null || isNaN(amount)) return null;
+    // Require a real date: avoids parsing headers / orphan amount lines as tx
+    if (!date) return null;
+
+    const libelleParts = remaining.filter((_, i) => !amountSlots.has(i) && remaining[i]);
     const libelle = libelleParts.join(' ').replace(/\s+/g, ' ').trim();
     if (!libelle) return null;
-    return { date: date || '', libelle, amount, raw: line };
+    return { date, libelle, amount, raw: line };
   }
 
   function countCommas(s) { return (s.match(/,/g) || []).length; }
@@ -418,12 +566,32 @@
   }
   function isAmount(s) {
     if (!s) return false;
-    const cleaned = s.replace(/€|EUR/gi, '').trim();
-    return /^[+\-]?\s?\d{1,3}([ .]\d{3})*([,.]\d{1,2})?$/.test(cleaned) ||
-           /^[+\-]?\d+([,.]\d{1,2})?$/.test(cleaned);
+    // Strip €/EUR and trailing D/C indicators (Crédit Agricole style)
+    let cleaned = s.replace(/€|EUR/gi, '').replace(/[\s]?[DC]$/i, '').trim();
+    // Allow trailing minus (e.g. "1234,56-")
+    if (/-$/.test(cleaned) && !/^-/.test(cleaned)) cleaned = '-' + cleaned.slice(0, -1);
+    // Require a decimal separator with 2 digits — avoids matching card numbers
+    // ("8626"), order references, etc. as amounts. Bank statements always show
+    // amounts with centimes (30,00 / 1.234,56).
+    return /^[+\-]?\d{1,3}([ .]\d{3})*[,.]\d{2}$/.test(cleaned) ||
+           /^[+\-]?\d+[,.]\d{2}$/.test(cleaned);
   }
   function parseAmount(s) {
-    let cleaned = s.replace(/€|EUR/gi, '').replace(/\s/g, '').trim();
+    let raw = String(s).replace(/€|EUR/gi, '').trim();
+    // Trailing D/C marker (Débit/Crédit)
+    let trailingSign = null;
+    const dcMatch = raw.match(/[\s]?([DC])$/i);
+    if (dcMatch) {
+      trailingSign = dcMatch[1].toUpperCase() === 'D' ? -1 : 1;
+      raw = raw.replace(/[\s]?[DC]$/i, '').trim();
+    }
+    // Trailing minus (e.g. "1234,56-")
+    let trailingMinus = false;
+    if (/-$/.test(raw) && !/^-/.test(raw)) {
+      trailingMinus = true;
+      raw = raw.slice(0, -1).trim();
+    }
+    let cleaned = raw.replace(/\s/g, '');
     const negative = cleaned.startsWith('-');
     cleaned = cleaned.replace(/^[+\-]/, '');
     if (cleaned.includes('.') && cleaned.includes(',')) {
@@ -431,8 +599,10 @@
     } else if (cleaned.includes(',')) {
       cleaned = cleaned.replace(',', '.');
     }
-    const v = parseFloat(cleaned);
-    return negative ? -v : v;
+    let v = parseFloat(cleaned);
+    if (negative || trailingMinus) v = -v;
+    if (trailingSign !== null) v = Math.abs(v) * trailingSign;
+    return v;
   }
 
   // ---------- CATEGORISATION ----------
