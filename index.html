@@ -4,7 +4,36 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Budget Scanner — Analyse bancaire instantanée</title>
-  <meta name="description" content="Collez votre relevé bancaire, obtenez un tableau de bord clair et des recommandations. 100% privé, aucune donnée envoyée." />
+  <meta name="description" content="Collez votre relevé bancaire, obtenez un tableau de bord clair, des alertes et des recommandations. 100% privé, aucune donnée envoyée." />
+  <meta name="theme-color" content="#0f172a" />
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="Budget Scanner — Analyse bancaire instantanée" />
+  <meta property="og:description" content="Tableau de bord, alertes, objectifs d'épargne, score de santé financière. 100% privé." />
+  <meta property="og:url" content="https://budget-scanner.vercel.app" />
+  <meta property="og:image" content="https://budget-scanner.vercel.app/og.svg" />
+  <!-- Twitter -->
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="Budget Scanner" />
+  <meta name="twitter:description" content="Analyse bancaire instantanée, 100% locale." />
+  <meta name="twitter:image" content="https://budget-scanner.vercel.app/og.svg" />
+
+  <!-- Favicon SVG inline -->
+  <link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='14' fill='none' stroke='%230f172a' stroke-width='2'/><path d='M16 2 A14 14 0 0 1 16 30 Z' fill='%230f172a'/></svg>" />
+
+  <!-- Apply saved theme before paint to avoid flash -->
+  <script>
+    (function () {
+      try {
+        var saved = localStorage.getItem('budget-scanner-theme');
+        var prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+        var theme = saved || (prefersDark ? 'dark' : 'light');
+        document.documentElement.setAttribute('data-theme', theme);
+      } catch (e) {}
+    })();
+  </script>
+
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
@@ -16,7 +45,12 @@
       </div>
       <nav class="nav">
         <a href="#how">Comment ça marche</a>
+        <a href="#about">À propos</a>
         <a href="#privacy">Confidentialité</a>
+        <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Basculer le thème" title="Thème clair / sombre">
+          <span class="theme-icon-light">☀</span>
+          <span class="theme-icon-dark">☾</span>
+        </button>
       </nav>
     </div>
   </header>
@@ -75,8 +109,29 @@
         <div class="dashboard-header">
           <h2 class="section-title">2. Tableau de bord</h2>
           <div class="card-actions">
+            <select id="compare-select" class="select" title="Comparer avec une analyse passée">
+              <option value="">Comparer avec…</option>
+            </select>
             <button id="export-csv" class="btn btn-ghost" type="button">Export CSV</button>
+            <button id="export-xlsx" class="btn btn-ghost" type="button">Export Excel</button>
             <button id="export-pdf" class="btn btn-ghost" type="button">Export PDF</button>
+          </div>
+        </div>
+
+        <!-- Smart alerts -->
+        <div id="alerts-container" class="alerts hidden"></div>
+
+        <!-- Health score -->
+        <div class="card health-card">
+          <div class="health-grid">
+            <div class="health-score">
+              <div class="health-score-value" id="health-score-value">—</div>
+              <div class="health-score-label" id="health-score-label">Score de santé financière</div>
+            </div>
+            <div class="health-details">
+              <div class="health-interpretation" id="health-interpretation">Lancez une analyse pour calculer votre score.</div>
+              <ul class="health-breakdown" id="health-breakdown"></ul>
+            </div>
           </div>
         </div>
 
@@ -85,28 +140,44 @@
           <div class="kpi">
             <span class="kpi-label">Revenus</span>
             <span class="kpi-value pos" id="kpi-income">—</span>
+            <span class="kpi-delta" id="kpi-income-delta"></span>
           </div>
           <div class="kpi">
             <span class="kpi-label">Dépenses</span>
             <span class="kpi-value neg" id="kpi-expenses">—</span>
+            <span class="kpi-delta" id="kpi-expenses-delta"></span>
           </div>
           <div class="kpi">
             <span class="kpi-label">Cash-flow</span>
             <span class="kpi-value" id="kpi-cashflow">—</span>
+            <span class="kpi-delta" id="kpi-cashflow-delta"></span>
           </div>
           <div class="kpi">
             <span class="kpi-label">Taux d'épargne</span>
             <span class="kpi-value" id="kpi-savings-rate">—</span>
+            <span class="kpi-delta" id="kpi-savings-delta"></span>
           </div>
         </div>
 
-        <!-- Breakdown -->
+        <!-- Charts: pie + line -->
         <div class="grid-2">
           <div class="card">
             <h3>Répartition par catégorie</h3>
-            <div id="category-breakdown" class="breakdown"></div>
+            <div class="chart-flex">
+              <div id="pie-chart" class="pie-chart"></div>
+              <div id="category-breakdown" class="breakdown"></div>
+            </div>
           </div>
 
+          <div class="card">
+            <h3>Évolution multi-mois</h3>
+            <div id="line-chart" class="line-chart">
+              <p class="help-text">Enregistrez plusieurs analyses pour visualiser l'évolution.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid-2">
           <div class="card">
             <h3>Top 5 dépenses</h3>
             <table class="table" id="top-expenses-table">
@@ -118,6 +189,37 @@
               </thead>
               <tbody></tbody>
             </table>
+          </div>
+
+          <!-- Savings goal -->
+          <div class="card">
+            <h3>Mon objectif d'épargne</h3>
+            <form id="goal-form" class="goal-form">
+              <label class="goal-field">
+                <span>Montant cible (€)</span>
+                <input id="goal-amount" type="number" min="0" step="50" placeholder="5000" />
+              </label>
+              <label class="goal-field">
+                <span>Sur (mois)</span>
+                <input id="goal-months" type="number" min="1" step="1" placeholder="12" />
+              </label>
+              <button class="btn btn-ghost" type="submit">Calculer</button>
+              <button id="goal-clear" class="btn btn-ghost" type="button">Effacer</button>
+            </form>
+            <div id="goal-result" class="goal-result"></div>
+          </div>
+        </div>
+
+        <!-- Subscriptions tracker -->
+        <div class="card">
+          <div class="card-header">
+            <h3>Mes abonnements récurrents</h3>
+            <div class="card-actions">
+              <span id="subs-total-summary" class="help-text"></span>
+            </div>
+          </div>
+          <div id="subscriptions-container">
+            <p class="help-text">Aucun abonnement détecté pour l'instant.</p>
           </div>
         </div>
 
@@ -141,6 +243,38 @@
               </thead>
               <tbody></tbody>
             </table>
+          </div>
+        </div>
+
+        <!-- Custom categories editor -->
+        <div class="card">
+          <div class="card-header">
+            <h3>Mes catégories personnalisées</h3>
+            <div class="card-actions">
+              <button id="add-category-btn" class="btn btn-ghost" type="button">+ Nouvelle catégorie</button>
+            </div>
+          </div>
+          <div id="custom-categories-list" class="custom-cats"></div>
+          <form id="custom-category-form" class="custom-cat-form hidden">
+            <input id="cc-name" type="text" placeholder="Nom (ex: Animaux)" required />
+            <input id="cc-keywords" type="text" placeholder="Mots-clés séparés par des virgules (croquettes, veto)" required />
+            <input id="cc-color" type="color" value="#0f172a" />
+            <button class="btn btn-primary" type="submit">Enregistrer</button>
+            <button id="cc-cancel" class="btn btn-ghost" type="button">Annuler</button>
+          </form>
+        </div>
+
+        <!-- History -->
+        <div class="card">
+          <div class="card-header">
+            <h3>Historique des analyses</h3>
+            <div class="card-actions">
+              <button id="save-snapshot" class="btn btn-ghost" type="button">Enregistrer cette analyse</button>
+              <button id="clear-history" class="btn btn-ghost" type="button">Tout effacer</button>
+            </div>
+          </div>
+          <div id="history-list" class="history-list">
+            <p class="help-text">Aucune analyse enregistrée. Cliquez sur « Enregistrer cette analyse » après une analyse.</p>
           </div>
         </div>
       </div>
@@ -181,8 +315,34 @@
           <div class="step">
             <span class="step-num">3</span>
             <h4>Tableau de bord</h4>
-            <p>KPI, répartition et recommandations apparaissent instantanément.</p>
+            <p>KPI, répartition, alertes et recommandations apparaissent instantanément.</p>
           </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ABOUT / FAQ -->
+    <section id="about" class="about">
+      <div class="container">
+        <h2 class="section-title">À propos & FAQ</h2>
+        <div class="card">
+          <h3>Qu'est-ce que Budget Scanner ?</h3>
+          <p>Un outil minimaliste et gratuit pour comprendre rapidement où va votre argent, sans créer de compte ni partager vos données.</p>
+
+          <h3>Mes données quittent-elles mon navigateur ?</h3>
+          <p>Non. Tout le traitement (parsing, catégorisation, calculs, génération de PDF, sauvegarde de l'historique) se déroule localement. Le navigateur ne contacte aucun backend.</p>
+
+          <h3>Où est stocké l'historique ?</h3>
+          <p>Dans le <code>localStorage</code> de votre navigateur, uniquement sur cet appareil. Vous pouvez tout effacer à tout moment via le bouton « Tout effacer ».</p>
+
+          <h3>Quels formats sont supportés ?</h3>
+          <p>CSV, TSV, TXT, OFX, QIF, et PDF (extraction automatique). Vous pouvez aussi coller du texte libre tant qu'on y trouve date / libellé / montant.</p>
+
+          <h3>Comment fonctionne le score de santé financière ?</h3>
+          <p>Sur 100 points : 40 pour le taux d'épargne, 30 pour le ratio charges fixes / revenus, 20 pour la présence d'une épargne récurrente, 10 pour l'absence de frais bancaires.</p>
+
+          <h3>Code source ?</h3>
+          <p>Le projet est open-source. <a href="https://github.com/bonolHO/budget-scanner" target="_blank" rel="noopener noreferrer">Voir sur GitHub →</a></p>
         </div>
       </div>
     </section>
@@ -194,7 +354,7 @@
         <p>
           Tout le traitement se fait dans votre navigateur. Aucune donnée bancaire
           n'est transmise, stockée ou journalisée sur un serveur. Fermez l'onglet,
-          tout disparaît.
+          tout disparaît (sauf l'historique que vous avez choisi de sauvegarder localement).
         </p>
       </div>
     </section>
@@ -202,12 +362,11 @@
 
   <footer class="site-footer">
     <div class="container">
-      <p>Budget Scanner — outil gratuit, sans compte, sans tracking.</p>
+      <p>Budget Scanner — outil gratuit, sans compte, sans tracking. <a href="https://github.com/bonolHO/budget-scanner" target="_blank" rel="noopener noreferrer">GitHub</a></p>
     </div>
   </footer>
 
-  <!-- External libs: loaded only on demand by app.js to keep initial load light.
-       Sources: cdnjs.cloudflare.com (verified providers, integrity hashes pinned below). -->
+  <!-- External libs: loaded only on demand by app.js to keep initial load light. -->
   <script src="app.js"></script>
 </body>
 </html>
