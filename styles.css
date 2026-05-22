@@ -215,7 +215,8 @@ section { padding: 32px 0; }
 .diagnose-output {
   margin-top: 12px;
   padding: 10px 14px;
-  background: var(--bg-muted, #0f172a);
+  background: var(--surface-muted, var(--surface));
+  color: var(--text);
   border: 1px solid var(--border);
   border-radius: var(--radius);
 }

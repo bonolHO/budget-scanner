@@ -604,7 +604,10 @@
       return line.split(/\s{2,}/).map(p => p.trim()).filter(Boolean);
     }
     const dateMatch = line.match(/^(\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4}|\d{4}-\d{2}-\d{2})/);
-    const amountMatch = line.match(/([+\-]?\s?\d{1,3}(?:[ .]\d{3})*(?:[,.]\d{1,2})?)\s*€?\s*$/);
+    // Accept either "1.850,00" / "1 850,00" (with thousand sep) OR a raw
+    // "1850,00" without separator. The previous regex was anchored on
+    // \d{1,3} and truncated "1850" → "850".
+    const amountMatch = line.match(/([+\-]?\s?(?:\d{1,3}(?:[ .]\d{3})+|\d+)[,.]\d{2})\s*€?\s*$/);
     if (dateMatch && amountMatch) {
       const middle = line.substring(dateMatch[0].length, line.length - amountMatch[0].length).trim();
       return [dateMatch[0], middle, amountMatch[1].trim()];
