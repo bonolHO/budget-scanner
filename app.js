@@ -204,6 +204,63 @@
   const flipSignsBtn = $('#flip-signs');
   if (flipSignsBtn) flipSignsBtn.addEventListener('click', flipAllSigns);
 
+  // Diagnostic button: explains why lines are/are not parsed
+  const diagnoseBtn = $('#diagnose-btn');
+  if (diagnoseBtn) diagnoseBtn.addEventListener('click', runDiagnostic);
+
+  function runDiagnostic() {
+    const raw = dataInput.value || '';
+    const allLines = raw.split(/\r?\n/);
+    const nonEmpty = allLines.map(l => l.trim()).filter(Boolean);
+    const txs = parseTransactions(raw);
+    const linesWithDate = nonEmpty.filter(l => /\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4}|\d{4}-\d{2}-\d{2}/.test(l));
+    // Detect lines that have a date but FAILED to parse
+    const failures = [];
+    for (const line of linesWithDate) {
+      if (isNoiseLine(line)) continue;
+      const tx = parseLine(line);
+      if (!tx) failures.push(line);
+    }
+    const noiseCount = nonEmpty.filter(isNoiseLine).length;
+    // Detect amount-like substrings on lines with date but no parsed amount
+    const amountRegex = /\d+[.,]\d{1,2}/g;
+    const sampleLines = nonEmpty.slice(0, 25);
+    const out = [];
+    out.push(`=== STATISTIQUES ===`);
+    out.push(`Lignes totales : ${nonEmpty.length}`);
+    out.push(`Lignes avec une date : ${linesWithDate.length}`);
+    out.push(`Lignes filtrées comme bruit : ${noiseCount}`);
+    out.push(`Transactions parsées avec succès : ${txs.length}`);
+    out.push(`Lignes datées MAIS rejetées : ${failures.length}`);
+    out.push('');
+    out.push(`=== 25 PREMIÈRES LIGNES BRUTES ===`);
+    sampleLines.forEach((l, i) => {
+      const hasDate = /\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4}/.test(l);
+      const amounts = l.match(amountRegex) || [];
+      const tags = [];
+      if (hasDate) tags.push('DATE');
+      if (amounts.length) tags.push(`AMT(${amounts.join(',')})`);
+      if (isNoiseLine(l)) tags.push('NOISE');
+      const tx = parseLine(l);
+      if (tx) tags.push(`OK→${tx.amount}`);
+      out.push(`${String(i + 1).padStart(2, '0')} [${tags.join('|') || '—'}] ${l.slice(0, 120)}`);
+    });
+    if (failures.length) {
+      out.push('');
+      out.push(`=== LIGNES DATÉES REJETÉES (max 15) ===`);
+      failures.slice(0, 15).forEach((l, i) => {
+        out.push(`${i + 1}. ${l.slice(0, 160)}`);
+      });
+    }
+    const panel = $('#diagnose-output');
+    const content = $('#diagnose-content');
+    if (panel && content) {
+      content.textContent = out.join('\n');
+      panel.hidden = false;
+      panel.open = true;
+    }
+  }
+
   function flipAllSigns() {
     if (!lastAnalysis) return;
     lastAnalysis.transactions.forEach(t => { t.amount = -t.amount; });

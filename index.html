@@ -88,7 +88,7 @@
             <textarea
               id="data-input"
               placeholder="Collez ici vos transactions, glissez-déposez un fichier (CSV, PDF, OFX, QIF) ou utilisez le bouton ci-dessus.&#10;&#10;Exemple :&#10;01/03/2025  SALAIRE ENTREPRISE     +2450,00&#10;02/03/2025  LOYER APPARTEMENT      -850,00&#10;03/03/2025  CARREFOUR              -76,40"
-              rows="12"
+              rows="22"
             ></textarea>
             <div class="drop-overlay">
               <span>Déposez votre fichier ici</span>
@@ -97,8 +97,14 @@
 
           <div class="card-footer">
             <p class="help-text" id="parse-feedback">En attente de données…</p>
+            <button id="diagnose-btn" class="btn btn-ghost" type="button">Diagnostic</button>
             <button id="analyze-btn" class="btn btn-primary" type="button" disabled>Analyser</button>
           </div>
+
+          <details id="diagnose-output" class="diagnose-output" hidden>
+            <summary>Résultat du diagnostic</summary>
+            <pre id="diagnose-content"></pre>
+          </details>
         </div>
       </div>
     </section>

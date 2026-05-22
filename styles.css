@@ -206,9 +206,28 @@ section { padding: 32px 0; }
 .card-footer {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   margin-top: 12px;
   gap: 12px;
+  flex-wrap: wrap;
+}
+.card-footer .help-text { margin-right: auto; }
+.diagnose-output {
+  margin-top: 12px;
+  padding: 10px 14px;
+  background: var(--bg-muted, #0f172a);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.diagnose-output summary { cursor: pointer; font-weight: 600; padding: 4px 0; }
+.diagnose-output pre {
+  margin: 10px 0 0;
+  white-space: pre-wrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  max-height: 480px;
+  overflow: auto;
 }
 
 /* INPUT */
