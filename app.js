@@ -208,6 +208,20 @@
   const diagnoseBtn = $('#diagnose-btn');
   if (diagnoseBtn) diagnoseBtn.addEventListener('click', runDiagnostic);
 
+  // Download CSV button (on the import step): exports textarea content,
+  // re-formatted as a clean CSV if it currently holds parseable transactions.
+  const downloadCsvInputBtn = $('#download-csv-input');
+  if (downloadCsvInputBtn) downloadCsvInputBtn.addEventListener('click', () => {
+    const txs = parseTransactions(dataInput.value);
+    if (txs.length === 0) {
+      parseFeedback.textContent = 'Aucune transaction à exporter.';
+      return;
+    }
+    const csv = transactionsToCSV(txs);
+    const today = new Date().toISOString().slice(0, 10);
+    downloadCSV(`releve-${today}.csv`, csv);
+  });
+
   function runDiagnostic() {
     const raw = dataInput.value || '';
     const allLines = raw.split(/\r?\n/);
@@ -339,8 +353,17 @@
     parseFeedback.textContent = `Lecture de "${file.name}"…`;
     try {
       if (name.endsWith('.pdf')) {
-        const text = await extractTextFromPDF(file);
-        dataInput.value = text;
+        const rawText = await extractTextFromPDF(file);
+        // Convert PDF → CSV automatically so the textarea shows clean,
+        // editable data (date;libellé;montant) instead of raw PDF noise.
+        const txs = parseTransactions(rawText);
+        if (txs.length > 0) {
+          dataInput.value = transactionsToCSV(txs);
+          parseFeedback.textContent = `${txs.length} transaction${txs.length > 1 ? 's' : ''} converties en CSV. Vérifiez et cliquez Analyser.`;
+        } else {
+          // Fallback: keep raw text so the user can see what was extracted
+          dataInput.value = rawText;
+        }
       } else {
         const text = await readAsText(file);
         dataInput.value = preprocessByFormat(text, name);
@@ -350,6 +373,38 @@
       parseFeedback.textContent = `Erreur : ${err.message}`;
       analyzeBtn.disabled = true;
     }
+  }
+
+  // Convert internal tx array into a clean, editable semicolon-CSV with header
+  function transactionsToCSV(txs) {
+    const escape = (v) => {
+      const s = String(v == null ? '' : v);
+      if (s.includes(';') || s.includes('"') || s.includes('\n')) {
+        return '"' + s.replace(/"/g, '""') + '"';
+      }
+      return s;
+    };
+    const fmtAmount = (n) => {
+      const sign = n < 0 ? '-' : '+';
+      return sign + Math.abs(n).toFixed(2).replace('.', ',');
+    };
+    const lines = ['Date;Libellé;Montant'];
+    for (const t of txs) {
+      lines.push([escape(t.date), escape(t.libelle), fmtAmount(t.amount)].join(';'));
+    }
+    return lines.join('\n');
+  }
+
+  function downloadCSV(filename, content) {
+    const blob = new Blob(['\uFEFF' + content], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   }
 
   function readAsText(file) {
