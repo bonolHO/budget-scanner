@@ -367,23 +367,83 @@
     window.pdfjsLib.GlobalWorkerOptions.workerSrc = CDN.pdfjsWorker;
     const arrayBuffer = await file.arrayBuffer();
     const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-    const allLines = [];
-    // Track Débit/Crédit column X positions (carried across pages if headers repeat)
-    let debitX = null, creditX = null;
+
+    // 1. Collect every text item across all pages
+    const pages = [];
     for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
       const page = await pdf.getPage(pageNum);
       const content = await page.getTextContent();
-      // Detect header positions on this page (banks repeat headers per page)
-      for (const item of content.items) {
+      pages.push(content.items);
+    }
+
+    // 2. Try to detect Débit/Crédit column headers (any page)
+    let debitX = null, creditX = null;
+    for (const items of pages) {
+      for (const item of items) {
         const t = (item.str || '').toLowerCase().trim();
         if (!t) continue;
-        if (/^d[ée]bit(\s*euros)?$/.test(t) || /d[ée]bit\s+euros/.test(t)) debitX = item.transform[4];
-        if (/^cr[ée]dit(\s*euros)?$/.test(t) || /cr[ée]dit\s+euros/.test(t)) creditX = item.transform[4];
+        if (/^d[ée]bit(\s*\(?euros?\)?)?$/.test(t) || /d[ée]bit\s+euros/.test(t)) debitX = item.transform[4];
+        if (/^cr[ée]dit(\s*\(?euros?\)?)?$/.test(t) || /cr[ée]dit\s+euros/.test(t)) creditX = item.transform[4];
       }
-      const lines = groupItemsIntoLines(content.items, debitX, creditX);
+    }
+
+    // 3. Fallback: if no headers found, cluster the X positions of all
+    // amount-looking items into 2 groups. If we get 2 distinct clusters,
+    // left = Débit and right = Crédit. This works on any French statement
+    // even if the header text is rendered as a graphic.
+    if (debitX === null || creditX === null) {
+      const AMT_RE = /^\d{1,3}(?:[.\s]\d{3})*,\d{2}$/;
+      const xs = [];
+      for (const items of pages) {
+        for (const item of items) {
+          const s = (item.str || '').trim();
+          if (AMT_RE.test(s)) xs.push(item.transform[4]);
+        }
+      }
+      const clusters = clusterAmountColumns(xs);
+      if (clusters) {
+        if (debitX === null) debitX = clusters.debitX;
+        if (creditX === null) creditX = clusters.creditX;
+      }
+    }
+
+    // 4. Group all items into lines with sign prefixed on amounts
+    const allLines = [];
+    for (const items of pages) {
+      const lines = groupItemsIntoLines(items, debitX, creditX);
       allLines.push(...lines);
     }
     return allLines.join('\n');
+  }
+
+  // Cluster X positions of all amount items into Débit / Crédit columns
+  // using a simple 1-D k-means with k=2. Returns null if there's only
+  // one effective cluster (single-column statement).
+  function clusterAmountColumns(xs) {
+    if (xs.length < 4) return null;
+    const sorted = [...xs].sort((a, b) => a - b);
+    const minX = sorted[0];
+    const maxX = sorted[sorted.length - 1];
+    if (maxX - minX < 40) return null; // single column
+    let cd = minX, cc = maxX;
+    for (let iter = 0; iter < 20; iter++) {
+      let sumD = 0, countD = 0, sumC = 0, countC = 0;
+      for (const x of sorted) {
+        if (Math.abs(x - cd) <= Math.abs(x - cc)) { sumD += x; countD++; }
+        else { sumC += x; countC++; }
+      }
+      if (countD === 0 || countC === 0) return null;
+      cd = sumD / countD;
+      cc = sumC / countC;
+    }
+    if (cc - cd < 30) return null; // clusters too close
+    // Sanity: both clusters need at least 1 member after final assignment
+    let countD = 0, countC = 0;
+    for (const x of sorted) {
+      if (Math.abs(x - cd) < Math.abs(x - cc)) countD++; else countC++;
+    }
+    if (countD === 0 || countC === 0) return null;
+    return { debitX: cd, creditX: cc };
   }
 
   function groupItemsIntoLines(items, debitX, creditX) {
@@ -510,6 +570,7 @@
   function parseTransactions(raw) {
     if (!raw || !raw.trim()) return [];
     const lines = raw.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    // --- Strict pass ---
     const transactions = [];
     for (const line of lines) {
       if (isNoiseLine(line)) continue;
@@ -517,13 +578,80 @@
       if (tx) {
         transactions.push(tx);
       } else if (transactions.length && isContinuationLine(line)) {
-        // Append to previous transaction's libellé
         const prev = transactions[transactions.length - 1];
         prev.libelle = (prev.libelle + ' ' + line).replace(/\s+/g, ' ').trim();
         prev.raw = prev.raw + ' | ' + line;
       }
     }
-    return transactions;
+    if (transactions.length > 0) return transactions;
+    // --- Lenient fallback ---
+    // For bank statements where pdf.js produces unexpected layouts: extract
+    // any line that has BOTH a date pattern and an amount pattern. Sign is
+    // inferred from libellé keywords.
+    return lenientParse(lines);
+  }
+
+  function lenientParse(lines) {
+    const DATE_RE = /(\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4}|\d{4}-\d{2}-\d{2})/;
+    // Amount with mandatory 2-digit decimal part (handles 30,00 / 1.850,00 /
+    // 1 850,00 / 1850,00 / explicit +/-).
+    const AMOUNT_RE = /([+\-]?\d{1,3}(?:[ .]\d{3})+[,.]\d{2}|[+\-]?\d+[,.]\d{2})/g;
+    const txs = [];
+    for (const line of lines) {
+      if (isNoiseLine(line)) {
+        // But allow noisy-looking lines if they clearly contain a date+amount
+        const hasDate = DATE_RE.test(line);
+        const hasAmt = new RegExp(AMOUNT_RE.source).test(line);
+        if (!(hasDate && hasAmt)) continue;
+      }
+      const dateMatch = line.match(DATE_RE);
+      if (!dateMatch) {
+        if (txs.length && isContinuationLine(line)) {
+          const prev = txs[txs.length - 1];
+          prev.libelle = (prev.libelle + ' ' + line).replace(/\s+/g, ' ').trim();
+          prev.raw = prev.raw + ' | ' + line;
+        }
+        continue;
+      }
+      const amounts = [...line.matchAll(new RegExp(AMOUNT_RE.source, 'g'))];
+      if (amounts.length === 0) continue;
+      // Take the last amount on the line (typically the column value)
+      const lastAmtMatch = amounts[amounts.length - 1];
+      const lastAmtStr = lastAmtMatch[0];
+      let amount = parseAmount(lastAmtStr);
+      if (isNaN(amount)) continue;
+      // Libellé: text between date and last amount, minus any extra date.
+      const dateEnd = dateMatch.index + dateMatch[0].length;
+      const amountStart = lastAmtMatch.index;
+      let libelle = line.substring(dateEnd, amountStart)
+        .replace(/^\s*\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4}\s*/, '') // strip date valeur
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (!libelle) libelle = 'TRANSACTION';
+      // Sign heuristic when amount has no explicit sign
+      const hasExplicitSign = /^[+\-]/.test(lastAmtStr.trim());
+      if (!hasExplicitSign) {
+        amount = signFromLibelle(libelle, Math.abs(amount));
+      }
+      txs.push({
+        date: normaliseDate(dateMatch[0]),
+        libelle,
+        amount,
+        raw: line
+      });
+    }
+    return txs;
+  }
+
+  // Heuristic: most bank statement libellés tell us if money came in or out
+  function signFromLibelle(libelle, absV) {
+    const L = (libelle || '').toUpperCase();
+    // Inflow indicators
+    if (/\b(VIR\b|VIREMENT|SALAIRE|REMUN|REMBOURS|ALLOC|CNAF\b|CAF\b|VERSEMENT|DEPOT|DÉPÔT|VERST|REM\.|SOLDE\s+CR|PENSION|RETRAITE|INDEMN|PRIME\b)/.test(L)) {
+      return absV;
+    }
+    // Default: outflow (most lines on a bank statement are debits)
+    return -absV;
   }
 
   function parseLine(line) {
@@ -574,8 +702,18 @@
         return null;
       }
     } else if (amountIndexes.length === 1) {
-      amount = parseAmount(remaining[amountIndexes[0]]);
+      const rawAmt = remaining[amountIndexes[0]];
+      amount = parseAmount(rawAmt);
       amountSlots = new Set([amountIndexes[0]]);
+      // If the cell had no explicit +/-/D/C marker, infer the sign from
+      // the libellé (most lines on a statement are debits).
+      const hasExplicitSign = /^[+\-]/.test(rawAmt.trim()) || /[\sDC]$/i.test(rawAmt.trim());
+      if (!hasExplicitSign && !isNaN(amount)) {
+        const libellePeek = remaining
+          .filter((_, i) => i !== amountIndexes[0])
+          .join(' ');
+        amount = signFromLibelle(libellePeek, Math.abs(amount));
+      }
     } else {
       return null;
     }
